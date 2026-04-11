@@ -1,3 +1,4 @@
+import "./config.js";
 import { TelemetryRecordSchema } from "./domain/schema.js";
 
 const cases = [
