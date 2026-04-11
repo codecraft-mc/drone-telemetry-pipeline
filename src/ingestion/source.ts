@@ -4,6 +4,11 @@
  */
 
 export type RawMessage = {
+  /**
+   * Opaque message identifier for the transport. For Redis stream sources this is the
+   * stream entry ID from `XREADGROUP` / `XAUTOCLAIM`; callers must pass the same IDs to
+   * {@link MessageSource.ack} after durable processing so entries leave the PEL.
+   */
   readonly id: string;
   readonly body: unknown;
   readonly receivedAt: Date;
@@ -11,4 +16,19 @@ export type RawMessage = {
 
 export interface IngestionSource {
   subscribe(signal?: AbortSignal): AsyncIterable<RawMessage>;
+}
+
+/**
+ * Pull-based ingestion: blocking reads and explicit acknowledgements. Unlike
+ * {@link IngestionSource.subscribe}, this contract fits consumer groups (read/ack) rather
+ * than push-style iteration.
+ */
+export interface MessageSource {
+  /**
+   * Blocks up to the source-configured cap, then returns zero or more messages (new reads
+   * and/or reclaimed pending).
+   */
+  read(signal?: AbortSignal): Promise<RawMessage[]>;
+  /** Acknowledges processed entries by transport id (same as {@link RawMessage.id}). */
+  ack(messageIds: readonly string[]): Promise<number>;
 }

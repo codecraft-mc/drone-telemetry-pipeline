@@ -21,7 +21,9 @@ function makePoolQuery(
 describe("PostgresTelemetryRepository", () => {
   it("passes INSERT SQL shape and positional parameters to pool.query", async () => {
     const record = validRecord();
-    const query = vi.fn(makePoolQuery(async () => ({ rows: [], rowCount: 1 })));
+    const query = vi.fn(
+      makePoolQuery(async () => ({ rows: [], rowCount: 1 }) as unknown as QueryResult),
+    );
     const pool = { query } as unknown as Pool;
     const repo = new PostgresTelemetryRepository(pool);
 
@@ -46,7 +48,9 @@ describe("PostgresTelemetryRepository", () => {
 
   it("returns inserted when rowCount is 1", async () => {
     const record = validRecord();
-    const query = vi.fn(makePoolQuery(async () => ({ rows: [], rowCount: 1 })));
+    const query = vi.fn(
+      makePoolQuery(async () => ({ rows: [], rowCount: 1 }) as unknown as QueryResult),
+    );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
 
     const result = await repo.insert(record);
@@ -58,7 +62,9 @@ describe("PostgresTelemetryRepository", () => {
 
   it("returns duplicate when rowCount is 0 (idempotent conflict)", async () => {
     const record = validRecord();
-    const query = vi.fn(makePoolQuery(async () => ({ rows: [], rowCount: 0 })));
+    const query = vi.fn(
+      makePoolQuery(async () => ({ rows: [], rowCount: 0 }) as unknown as QueryResult),
+    );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
 
     const result = await repo.insert(record);
@@ -71,7 +77,7 @@ describe("PostgresTelemetryRepository", () => {
   it("treats missing rowCount as duplicate", async () => {
     const record = validRecord();
     const query = vi.fn(
-      makePoolQuery(async () => ({ rows: [], rowCount: undefined })),
+      makePoolQuery(async () => ({ rows: [], rowCount: undefined }) as unknown as QueryResult),
     );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
 
