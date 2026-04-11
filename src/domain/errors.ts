@@ -3,6 +3,8 @@
  * subclass coupling so callers can switch exhaustively on `kind`.
  */
 
+import type { ZodIssue } from "zod";
+
 export type ParseError = {
   readonly kind: "ParseError";
   readonly message: string;
@@ -13,6 +15,7 @@ export type ParseError = {
 export type ValidationError = {
   readonly kind: "ValidationError";
   readonly message: string;
+  readonly issues: readonly ZodIssue[];
   readonly cause?: unknown;
   readonly context?: Readonly<Record<string, unknown>>;
 };
