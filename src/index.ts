@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import Redis from "ioredis";
 import pino from "pino";
 import { parseEnv } from "./config.js";
+import { createLogger } from "./lib/logger.js";
 import { RedisMessageSource } from "./ingestion/redis-source.js";
 import { PostgresTelemetryRepository } from "./storage/postgres.repository.js";
 import { PostgresDeadLetterRepository } from "./storage/postgres-dead-letter.repository.js";
@@ -15,12 +16,14 @@ import { Worker } from "./worker/worker.js";
 
 const env = parseEnv();
 
-const log = pino({
-  level: env.LOG_LEVEL,
-  base: { pid: process.pid, host: hostname() },
-});
+const rootLogger = createLogger(
+  pino({
+    level: env.LOG_LEVEL,
+    base: { pid: process.pid, host: hostname() },
+  }),
+);
 
-log.info({ nodeEnv: env.NODE_ENV }, "starting drone-telemetry-pipeline");
+rootLogger.info("starting drone-telemetry-pipeline", { nodeEnv: env.NODE_ENV });
 
 // ---------------------------------------------------------------------------
 // Infrastructure clients
@@ -30,7 +33,7 @@ const pgPool = new Pool({ connectionString: env.DATABASE_URL });
 
 // Surface pool-level errors so they don't become unhandled rejections.
 pgPool.on("error", (err) => {
-  log.error({ err }, "idle postgres client error");
+  rootLogger.error("idle postgres client error", { err });
 });
 
 const redis = new Redis(env.REDIS_URL, {
@@ -41,7 +44,7 @@ const redis = new Redis(env.REDIS_URL, {
 });
 
 redis.on("error", (err: unknown) => {
-  log.warn({ err }, "redis connection error");
+  rootLogger.warn("redis connection error", { err });
 });
 
 // ---------------------------------------------------------------------------
@@ -63,6 +66,7 @@ const source = new RedisMessageSource({
   claimIntervalMs: 30_000,
   claimMinIdleMs: 60_000,
   startId: "$",
+  logger: rootLogger,
 });
 
 const telemetryRepo = new PostgresTelemetryRepository(pgPool);
@@ -72,19 +76,7 @@ const worker = new Worker({
   source,
   telemetryRepo,
   deadLetterRepo,
-  logger: {
-    debug: (msg, fields) => log.debug(fields ?? {}, msg),
-    info:  (msg, fields) => log.info(fields ?? {}, msg),
-    warn:  (msg, fields) => log.warn(fields ?? {}, msg),
-    error: (msg, fields) => log.error(fields ?? {}, msg),
-    child: (bindings) => ({
-      debug: (msg, fields) => log.child(bindings).debug(fields ?? {}, msg),
-      info:  (msg, fields) => log.child(bindings).info(fields ?? {}, msg),
-      warn:  (msg, fields) => log.child(bindings).warn(fields ?? {}, msg),
-      error: (msg, fields) => log.child(bindings).error(fields ?? {}, msg),
-      child: (b) => log.child({ ...bindings, ...b }) as never,
-    }),
-  },
+  logger: rootLogger,
 });
 
 // ---------------------------------------------------------------------------
@@ -106,12 +98,12 @@ let shuttingDown = false;
  */
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) {
-    log.warn({ signal }, "second termination signal received — forcing exit");
+    rootLogger.warn("second termination signal received — forcing exit", { signal });
     process.exit(1);
   }
 
   shuttingDown = true;
-  log.info({ signal }, "shutdown initiated — draining in-flight messages");
+  rootLogger.info("shutdown initiated — draining in-flight messages", { signal });
 
   // Stop the read loop; the current batch runs to completion before the
   // AbortError surfaces from worker.run().
@@ -120,7 +112,7 @@ async function shutdown(signal: string): Promise<void> {
   // Give the drain a generous but bounded window before we force-close.
   const DRAIN_TIMEOUT_MS = 30_000;
   const drainTimeout = setTimeout(() => {
-    log.error("drain timeout exceeded — forcing exit");
+    rootLogger.error("drain timeout exceeded — forcing exit");
     process.exit(1);
   }, DRAIN_TIMEOUT_MS).unref();
 
@@ -128,23 +120,22 @@ async function shutdown(signal: string): Promise<void> {
     await workerDone;
   } catch (err: unknown) {
     // AbortError is the expected clean exit path — anything else is notable.
-    const isAbortError =
-      err instanceof Error && err.name === "AbortError";
+    const isAbortError = err instanceof Error && err.name === "AbortError";
     if (!isAbortError) {
-      log.error({ err }, "worker exited with unexpected error during shutdown");
+      rootLogger.error("worker exited with unexpected error during shutdown", { err });
     }
   }
 
   clearTimeout(drainTimeout);
 
-  log.info("worker drained — closing connections");
+  rootLogger.info("worker drained — closing connections");
 
   await Promise.allSettled([
-    redis.quit().catch((e: unknown) => log.warn({ err: e }, "redis quit error")),
-    pgPool.end().catch((e: unknown) => log.warn({ err: e }, "pg pool end error")),
+    redis.quit().catch((e: unknown) => rootLogger.warn("redis quit error", { err: e })),
+    pgPool.end().catch((e: unknown) => rootLogger.warn("pg pool end error", { err: e })),
   ]);
 
-  log.info("shutdown complete");
+  rootLogger.info("shutdown complete");
   process.exit(0);
 }
 
@@ -158,13 +149,13 @@ process.once("SIGINT",  () => void shutdown("SIGINT"));
 // Connect eagerly so startup errors surface immediately.
 try {
   await redis.connect();
-  log.info("redis connected");
+  rootLogger.info("redis connected");
 
   const pgClient = await pgPool.connect();
   pgClient.release();
-  log.info("postgres connected");
+  rootLogger.info("postgres connected");
 } catch (err) {
-  log.fatal({ err }, "failed to connect to infrastructure — aborting");
+  rootLogger.error("failed to connect to infrastructure — aborting", { err });
   process.exit(1);
 }
 
@@ -172,7 +163,7 @@ try {
 // could fire (signals are delivered asynchronously so this is safe).
 const workerDone: Promise<void> = worker.run(abortController.signal);
 
-log.info({ streamKey: STREAM_KEY, group: GROUP_NAME, consumer: CONSUMER_NAME }, "worker running");
+rootLogger.info("worker running", { streamKey: STREAM_KEY, group: GROUP_NAME, consumer: CONSUMER_NAME });
 
 // Await the worker so the process stays alive.  Under normal operation this
 // never resolves — it only returns after abort.
@@ -181,7 +172,7 @@ try {
 } catch (err: unknown) {
   const isAbortError = err instanceof Error && err.name === "AbortError";
   if (!isAbortError) {
-    log.fatal({ err }, "worker crashed — initiating emergency shutdown");
+    rootLogger.error("worker crashed — initiating emergency shutdown", { err });
     await shutdown("crash");
   }
   // AbortError here means shutdown() already handled things — nothing to do.

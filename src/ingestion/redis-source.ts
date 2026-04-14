@@ -1,5 +1,6 @@
 import type Redis from "ioredis";
 import type { MessageSource, RawMessage } from "./source.js";
+import type { Logger } from "../lib/logger.js";
 
 /** Upper bound for `XREADGROUP BLOCK` so waits never exceed this many milliseconds. */
 export const REDIS_MESSAGE_SOURCE_MAX_BLOCK_MS = 10_000;
@@ -25,6 +26,8 @@ export type RedisMessageSourceOptions = {
    * messages: `'$'`). Use `'0'` to read the full backlog from the start of the stream.
    */
   startId?: string;
+  /** Optional logger. When omitted all instrumentation is silently skipped. */
+  logger?: Logger;
 };
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -166,6 +169,7 @@ export class RedisMessageSource implements MessageSource {
   private readonly claimIntervalMs: number;
   private readonly claimMinIdleMs: number;
   private readonly groupStartId: string;
+  private readonly log: Logger | undefined;
 
   private groupReady = false;
   private claimCursor = "0-0";
@@ -182,6 +186,12 @@ export class RedisMessageSource implements MessageSource {
     this.claimIntervalMs = options.claimIntervalMs;
     this.claimMinIdleMs = options.claimMinIdleMs;
     this.groupStartId = options.startId ?? DEFAULT_GROUP_START_ID;
+    this.log = options.logger?.child({
+      component: "RedisMessageSource",
+      streamKey: options.streamKey,
+      groupName: options.groupName,
+      consumerName: options.consumerName,
+    });
   }
 
   private async ensureGroup(signal?: AbortSignal): Promise<void> {
@@ -189,14 +199,21 @@ export class RedisMessageSource implements MessageSource {
       return;
     }
     throwIfAborted(signal);
+    let created = true;
     try {
       await this.redis.xgroup("CREATE", this.streamKey, this.groupName, this.groupStartId, "MKSTREAM");
     } catch (err) {
       if (!isBusyGroupError(err)) {
         throw err;
       }
+      created = false;
     }
     this.groupReady = true;
+    if (created) {
+      this.log?.info("consumer group created", { startId: this.groupStartId });
+    } else {
+      this.log?.debug("consumer group already exists");
+    }
   }
 
   async read(signal?: AbortSignal): Promise<RawMessage[]> {
@@ -209,7 +226,11 @@ export class RedisMessageSource implements MessageSource {
       this.reclaimCycleActive || now - this.lastClaimAt >= this.claimIntervalMs || this.lastClaimAt === 0;
 
     if (dueClaim) {
+      if (!this.reclaimCycleActive) {
+        this.log?.debug("reclaim cycle starting", { cursor: this.claimCursor, claimMinIdleMs: this.claimMinIdleMs });
+      }
       this.reclaimCycleActive = true;
+      let cycleClaimed = 0;
       while (out.length < this.readCount) {
         throwIfAborted(signal);
         const remaining = this.readCount - out.length;
@@ -230,6 +251,7 @@ export class RedisMessageSource implements MessageSource {
         this.claimCursor = nextCursor;
         for (const [id, fields] of rows) {
           out.push(entryToRawMessage(id, fields));
+          cycleClaimed++;
           if (out.length >= this.readCount) {
             break;
           }
@@ -238,6 +260,7 @@ export class RedisMessageSource implements MessageSource {
           this.lastClaimAt = Date.now();
           this.reclaimCycleActive = false;
           this.claimCursor = "0-0";
+          this.log?.debug("reclaim cycle complete", { claimed: cycleClaimed });
           break;
         }
         if (rows.length === 0) {

@@ -16,10 +16,10 @@ import { batteryLowRecord } from "../fixtures/records.js";
 
 class FakeLogger implements Logger {
   readonly messages: Array<{ level: string; msg: string; fields?: LogFields }> = [];
-  debug(msg: string, fields?: LogFields) { this.messages.push({ level: "debug", msg, fields }); }
-  info(msg: string, fields?: LogFields)  { this.messages.push({ level: "info",  msg, fields }); }
-  warn(msg: string, fields?: LogFields)  { this.messages.push({ level: "warn",  msg, fields }); }
-  error(msg: string, fields?: LogFields) { this.messages.push({ level: "error", msg, fields }); }
+  debug(msg: string, fields?: LogFields) { this.messages.push({ level: "debug", msg, ...(fields !== undefined && { fields }) }); }
+  info(msg: string, fields?: LogFields)  { this.messages.push({ level: "info",  msg, ...(fields !== undefined && { fields }) }); }
+  warn(msg: string, fields?: LogFields)  { this.messages.push({ level: "warn",  msg, ...(fields !== undefined && { fields }) }); }
+  error(msg: string, fields?: LogFields) { this.messages.push({ level: "error", msg, ...(fields !== undefined && { fields }) }); }
   child(_bindings: LogFields): Logger    { return this; }
 }
 

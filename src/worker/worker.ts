@@ -2,6 +2,7 @@ import type { MessageSource, RawMessage } from "../ingestion/source.js";
 import type { DeadLetterRepository } from "../storage/dead-letter.repository.js";
 import type { TelemetryRepository } from "../storage/repository.js";
 import type { Logger } from "../lib/logger.js";
+import { makeCorrelationId, logDomainError } from "../lib/logger.js";
 import type { ParseError } from "../domain/errors.js";
 import type { Result } from "../lib/result.js";
 import { ok } from "../lib/result.js";
@@ -61,7 +62,12 @@ export class Worker {
   }
 
   private async processMessage(msg: RawMessage): Promise<void> {
-    const log = this.log.child({ messageId: msg.id });
+    // Bind the stream entry ID as the base correlation ID; drone ID is added
+    // after a successful parse once we know which device sent the message.
+    const log = this.log.child({
+      messageId: msg.id,
+      correlationId: makeCorrelationId(msg.id),
+    });
 
     // --- Delivery-count tracking ---
     const attempt = (this.deliveryCounts.get(msg.id) ?? 0) + 1;
@@ -87,7 +93,7 @@ export class Worker {
     // --- Parse ---
     const parseResult = parseBody(msg.body);
     if (!parseResult.ok) {
-      log.warn("parse failure; routing to DLQ", { error: parseResult.error.message });
+      logDomainError(log, parseResult.error);
       await this.sendToDLQ(msg, "ParseError", parseResult.error.message, log);
       this.deliveryCounts.delete(msg.id);
       await this.source.ack([msg.id]);
@@ -97,37 +103,47 @@ export class Worker {
     // --- Validate ---
     const validateResult = validate(parseResult.value);
     if (!validateResult.ok) {
-      log.warn("validation failure; routing to DLQ", { error: validateResult.error.message });
+      logDomainError(log, validateResult.error);
       await this.sendToDLQ(msg, "ValidationError", validateResult.error.message, log);
       this.deliveryCounts.delete(msg.id);
       await this.source.ack([msg.id]);
       return;
     }
 
-    // --- Write ---
+    // --- Success path: extend correlation ID with the now-known drone ID ---
     const record = validateResult.value;
+    const msgLog = log.child({
+      correlationId: makeCorrelationId(msg.id, record.droneId),
+      droneId: record.droneId,
+      eventType: record.eventType,
+    });
+
+    // --- Write ---
     const insertResult = await this.telemetryRepo.insert(record);
 
     if (!insertResult.ok) {
       const { error } = insertResult;
       if (error.kind === "TransientError") {
         // Do not ack: leave in the PEL so the source redelivers after the idle timeout.
-        log.warn("transient write error; will redeliver", {
-          attempt,
-          error: error.message,
-        });
+        logDomainError(msgLog, error, { attempt });
         return;
       }
       // PermanentError: no point retrying.
-      log.error("permanent write error; routing to DLQ", { error: error.message });
-      await this.sendToDLQ(msg, "PermanentError", error.message, log);
+      logDomainError(msgLog, error);
+      await this.sendToDLQ(msg, "PermanentError", error.message, msgLog);
       this.deliveryCounts.delete(msg.id);
       await this.source.ack([msg.id]);
       return;
     }
 
-    // --- Success ---
-    log.debug("record written", { outcome: insertResult.value, attempt });
+    // --- Duplicate / already-persisted: debug only (correct pipeline behaviour) ---
+    // --- New record written: info ---
+    const outcome = insertResult.value;
+    if (outcome === "duplicate") {
+      msgLog.debug("duplicate message skipped", { attempt });
+    } else {
+      msgLog.info("record written", { attempt });
+    }
     this.deliveryCounts.delete(msg.id);
     await this.source.ack([msg.id]);
   }
