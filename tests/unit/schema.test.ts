@@ -3,7 +3,7 @@ import {
   MAX_CLOCK_SKEW_MS,
   MIN_TIMESTAMP,
   TelemetryRecordSchema,
-} from "./schema.js";
+} from "../../src/domain/schema.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

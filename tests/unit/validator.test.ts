@@ -5,9 +5,11 @@ import {
   MIN_TIMESTAMP,
   batteryLowRecord,
   deliveryCompletedRecord,
+  errorRecord,
   isoNearNow,
   omitKey,
   routeAdjustedRecord,
+  sensorReadingRecord,
   withTimestamp,
 } from "../fixtures/records.js";
 import { validate } from "../../src/processing/validator.js";
@@ -24,21 +26,42 @@ function assertValidationFailure(
 }
 
 describe("validate", () => {
-  describe("valid records", () => {
-    it("accepts default BATTERY_LOW from factory", () => {
+  describe("valid records — all five event types", () => {
+    it("accepts BATTERY_LOW", () => {
       const result = validate(batteryLowRecord());
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok");
       expect(result.value.eventType).toBe("BATTERY_LOW");
-      expect(result.value.timestamp instanceof Date).toBe(true);
+      expect(result.value.timestamp).toBeInstanceOf(Date);
     });
 
-    it("accepts DELIVERY_COMPLETED variant", () => {
+    it("accepts DELIVERY_COMPLETED", () => {
       const result = validate(deliveryCompletedRecord());
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok");
       expect(result.value.eventType).toBe("DELIVERY_COMPLETED");
-      expect(result.value.timestamp instanceof Date).toBe(true);
+      expect(result.value.timestamp).toBeInstanceOf(Date);
+    });
+
+    it("accepts ROUTE_ADJUSTED", () => {
+      const result = validate(routeAdjustedRecord());
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.value.eventType).toBe("ROUTE_ADJUSTED");
+    });
+
+    it("accepts SENSOR_READING", () => {
+      const result = validate(sensorReadingRecord());
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.value.eventType).toBe("SENSOR_READING");
+    });
+
+    it("accepts ERROR", () => {
+      const result = validate(errorRecord());
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.value.eventType).toBe("ERROR");
     });
   });
 
@@ -86,10 +109,24 @@ describe("validate", () => {
         validate(batteryLowRecord({ telemetryData: "not-an-object" as unknown })),
       );
     });
+
+    it("rejects null input", () => {
+      assertValidationFailure(validate(null));
+    });
+
+    it("rejects string input", () => {
+      assertValidationFailure(validate("not an object"));
+    });
+  });
+
+  describe("droneId format", () => {
+    it("rejects droneId not matching regex (uppercase)", () => {
+      assertValidationFailure(validate(batteryLowRecord({ droneId: "DRONE-ABC" })));
+    });
   });
 
   describe("batteryLevel range", () => {
-    it("rejects -1 and 101 for BATTERY_LOW", () => {
+    it("rejects batteryLevel -1 and 101", () => {
       assertValidationFailure(
         validate(batteryLowRecord({ telemetryData: { batteryLevel: -1 } })),
       );
@@ -125,12 +162,7 @@ describe("validate", () => {
   describe("unknown eventType", () => {
     it("rejects unknown eventType string", () => {
       assertValidationFailure(
-        validate(
-          batteryLowRecord({
-            eventType: "TAKEOFF",
-            telemetryData: { foo: "bar" },
-          }),
-        ),
+        validate(batteryLowRecord({ eventType: "TAKEOFF", telemetryData: { foo: "bar" } })),
       );
     });
   });
@@ -144,21 +176,13 @@ describe("validate", () => {
   describe("union / shape mismatch", () => {
     it("rejects BATTERY_LOW with ROUTE_ADJUSTED-shaped telemetry", () => {
       assertValidationFailure(
-        validate(
-          batteryLowRecord({
-            telemetryData: { lat: 1, lng: 2 },
-          }),
-        ),
+        validate(batteryLowRecord({ telemetryData: { lat: 1, lng: 2 } })),
       );
     });
 
     it("rejects ROUTE_ADJUSTED with BATTERY_LOW-shaped telemetry", () => {
       assertValidationFailure(
-        validate(
-          routeAdjustedRecord({
-            telemetryData: { batteryLevel: 50 },
-          }),
-        ),
+        validate(routeAdjustedRecord({ telemetryData: { batteryLevel: 50 } })),
       );
     });
   });
