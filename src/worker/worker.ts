@@ -86,7 +86,7 @@ export class Worker {
         log,
       );
       this.deliveryCounts.delete(msg.id);
-      await this.source.ack([msg.id]);
+      await this.safeAck(msg.id, log);
       return;
     }
 
@@ -96,7 +96,7 @@ export class Worker {
       logDomainError(log, parseResult.error);
       await this.sendToDLQ(msg, "ParseError", parseResult.error.message, log);
       this.deliveryCounts.delete(msg.id);
-      await this.source.ack([msg.id]);
+      await this.safeAck(msg.id, log);
       return;
     }
 
@@ -106,7 +106,7 @@ export class Worker {
       logDomainError(log, validateResult.error);
       await this.sendToDLQ(msg, "ValidationError", validateResult.error.message, log);
       this.deliveryCounts.delete(msg.id);
-      await this.source.ack([msg.id]);
+      await this.safeAck(msg.id, log);
       return;
     }
 
@@ -132,7 +132,7 @@ export class Worker {
       logDomainError(msgLog, error);
       await this.sendToDLQ(msg, "PermanentError", error.message, msgLog);
       this.deliveryCounts.delete(msg.id);
-      await this.source.ack([msg.id]);
+      await this.safeAck(msg.id, msgLog);
       return;
     }
 
@@ -145,7 +145,27 @@ export class Worker {
       msgLog.info("record written", { attempt });
     }
     this.deliveryCounts.delete(msg.id);
-    await this.source.ack([msg.id]);
+    await this.safeAck(msg.id, msgLog);
+  }
+
+  /**
+   * Acks a message, swallowing any Redis error rather than crashing the worker.
+   *
+   * Rationale: the write to Postgres has already succeeded by the time ack is
+   * called. A failed ack leaves the message in the PEL; XAUTOCLAIM will reclaim
+   * it after claimMinIdleMs and the duplicate-detection path (ON CONFLICT DO
+   * NOTHING) ensures it is handled safely on redelivery. Crashing the process
+   * over ack bookkeeping is disproportionate given the pipeline is designed to
+   * tolerate duplicates.
+   */
+  private async safeAck(messageId: string, log: Logger): Promise<void> {
+    try {
+      await this.source.ack([messageId]);
+    } catch (err) {
+      log.warn("ack failed — message will be reclaimed from PEL on next cycle", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
