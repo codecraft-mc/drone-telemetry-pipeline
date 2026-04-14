@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: telemetry
+      POSTGRES_PASSWORD: telemetry
+      POSTGRES_DB: telemetry_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data   # in-memory: fast, no disk state between runs
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
