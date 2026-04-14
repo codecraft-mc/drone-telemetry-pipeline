@@ -4,13 +4,85 @@ services:
     environment:
       POSTGRES_USER: telemetry
       POSTGRES_PASSWORD: telemetry
-      POSTGRES_DB: telemetry_test
+      POSTGRES_DB: telemetry
     ports:
-      - "5433:5432"
-    tmpfs:
-      - /var/lib/postgresql/data   # in-memory: fast, no disk state between runs
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry_test"]
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry"]
       interval: 2s
       timeout: 5s
       retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: telemetry
+      PGPASSWORD: telemetry
+      PGDATABASE: telemetry
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint: >
+      sh -c "
+        for f in /migrations/*.sql; do
+          echo \"Applying $$f\";
+          psql -f \"$$f\" || exit 1;
+        done;
+        echo 'Migrations complete.'
+      "
+    restart: "no"
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://telemetry:telemetry@postgres:5432/telemetry
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      LOG_LEVEL: info
+    restart: unless-stopped
+
+  producer:
+    profiles: [demo]
+    # Use a full Node image with devDeps available (tsx is a devDependency)
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app:ro
+      - /app/node_modules
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+    command: >
+      sh -c "npm install --silent && npx tsx scripts/producer.ts
+        --rate ${PRODUCER_RATE:-20}
+        --duration ${PRODUCER_DURATION:-60}
+        --corruption ${PRODUCER_CORRUPTION:-0.25}
+        --drones ${PRODUCER_DRONES:-8}"
+    restart: "no"
+
+volumes:
+  postgres_data:

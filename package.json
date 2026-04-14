@@ -13,11 +13,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "produce": "tsx scripts/producer.ts"
   },
   "license": "MIT",
   "private": true,
   "dependencies": {
+    "dotenv": "^17.4.2",
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",
     "pino": "^10.3.1",

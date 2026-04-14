@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import "dotenv/config";
 import process from "node:process";
 import { z, ZodError } from "zod";
 
