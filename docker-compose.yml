@@ -76,13 +76,17 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
-    command: >
-      sh -c "npm install --silent && npx tsx scripts/producer.ts
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --no-package-lock --silent &&
+        npx tsx scripts/producer.ts
         --rate ${PRODUCER_RATE:-20}
         --duration ${PRODUCER_DURATION:-60}
         --corruption ${PRODUCER_CORRUPTION:-0.25}
         --drones ${PRODUCER_DRONES:-8}
-        --maxlen ${PRODUCER_MAXLEN:-100000}"
+        --maxlen ${PRODUCER_MAXLEN:-100000}
     restart: "no"
 
 volumes:
