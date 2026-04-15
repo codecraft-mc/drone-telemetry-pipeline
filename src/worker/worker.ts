@@ -70,8 +70,14 @@ export class Worker {
     });
 
     // --- Delivery-count tracking ---
-    const attempt = (this.deliveryCounts.get(msg.id) ?? 0) + 1;
-    this.deliveryCounts.set(msg.id, attempt);
+    // Prefer the authoritative PEL count from the transport (survives restarts) over the
+    // in-process counter. Fall back to in-process for sources that don't populate it.
+    const attempt = msg.deliveryCount !== undefined
+      ? msg.deliveryCount
+      : (this.deliveryCounts.get(msg.id) ?? 0) + 1;
+    if (msg.deliveryCount === undefined) {
+      this.deliveryCounts.set(msg.id, attempt);
+    }
 
     // Exhaustion check: route to DLQ without retrying further.
     if (attempt > this.maxDeliveryCount) {
@@ -119,7 +125,7 @@ export class Worker {
     });
 
     // --- Write ---
-    const insertResult = await this.telemetryRepo.insert(record);
+    const insertResult = await this.telemetryRepo.insert(record, msg.id);
 
     if (!insertResult.ok) {
       const { error } = insertResult;

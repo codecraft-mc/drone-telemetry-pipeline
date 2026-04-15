@@ -15,8 +15,10 @@ CREATE TABLE telemetry_events (
   event_type TEXT NOT NULL,
   status_code SMALLINT NOT NULL CHECK (status_code BETWEEN 0 AND 999),
   payload JSONB NOT NULL,
+  message_id TEXT NOT NULL,
   ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT telemetry_events_drone_event_time_event_type_key UNIQUE (drone_id, event_time, event_type)
+  CONSTRAINT telemetry_events_drone_event_time_event_type_key UNIQUE (drone_id, event_time, event_type),
+  CONSTRAINT telemetry_events_message_id_key UNIQUE (message_id)
 );
 
 CREATE INDEX telemetry_events_drone_id_event_time_idx

@@ -7,5 +7,6 @@ export type TelemetryInsertOutcome = "inserted" | "duplicate";
 export interface TelemetryRepository {
   insert(
     record: TelemetryRecord,
+    messageId: string,
   ): Promise<Result<TelemetryInsertOutcome, TransientError | PermanentError>>;
 }

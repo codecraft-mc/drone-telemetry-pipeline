@@ -49,13 +49,14 @@ function deadLetterInsert(overrides: Partial<DeadLetterInsert> = {}): DeadLetter
 describe("PostgresTelemetryRepository", () => {
   it("passes INSERT SQL shape and positional parameters to pool.query", async () => {
     const record = validRecord();
+    const messageId = "msg-abc";
     const query = vi.fn(
       makePoolQuery(async () => ({ rows: [], rowCount: 1 }) as unknown as QueryResult),
     );
     const pool = { query } as unknown as Pool;
     const repo = new PostgresTelemetryRepository(pool);
 
-    await repo.insert(record);
+    await repo.insert(record, messageId);
 
     expect(query).toHaveBeenCalledTimes(1);
     const [sql, params] = query.mock.calls[0] ?? [];
@@ -64,13 +65,19 @@ describe("PostgresTelemetryRepository", () => {
     expect(sql).toContain("DO NOTHING");
     expect(sql).toContain("RETURNING id");
     expect(sql).toContain("$5::jsonb");
-    expect(params).toEqual([
-      record.droneId,
-      record.timestamp,
-      record.eventType,
-      record.statusCode,
-      JSON.stringify(record),
-    ]);
+    expect(sql).toContain("$6");
+    expect(sql).toContain("message_id");
+    // params: drone_id, event_time, event_type, status_code, payload (snake_case telemetryData), message_id
+    expect(Array.isArray(params)).toBe(true);
+    expect(params).toHaveLength(6);
+    expect(params?.[0]).toBe(record.droneId);
+    expect(params?.[2]).toBe(record.eventType);
+    expect(params?.[3]).toBe(record.statusCode);
+    expect(params?.[5]).toBe(messageId);
+    // payload should be snake_cased telemetryData only, not the full record
+    const payload = JSON.parse(params?.[4] as unknown as string) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("droneId");
+    expect(payload).toHaveProperty("battery_level");
   });
 
   it("returns 'inserted' when rowCount is 1", async () => {
@@ -78,7 +85,7 @@ describe("PostgresTelemetryRepository", () => {
       makePoolQuery(async () => ({ rows: [], rowCount: 1 }) as unknown as QueryResult),
     );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
-    const result = await repo.insert(validRecord());
+    const result = await repo.insert(validRecord(), "msg-1");
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.value).toBe("inserted");
@@ -89,7 +96,7 @@ describe("PostgresTelemetryRepository", () => {
       makePoolQuery(async () => ({ rows: [], rowCount: 0 }) as unknown as QueryResult),
     );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
-    const result = await repo.insert(validRecord());
+    const result = await repo.insert(validRecord(), "msg-1");
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.value).toBe("duplicate");
@@ -100,7 +107,7 @@ describe("PostgresTelemetryRepository", () => {
       makePoolQuery(async () => ({ rows: [], rowCount: null }) as unknown as QueryResult),
     );
     const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
-    const result = await repo.insert(validRecord());
+    const result = await repo.insert(validRecord(), "msg-1");
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.value).toBe("duplicate");
@@ -110,7 +117,7 @@ describe("PostgresTelemetryRepository", () => {
     async function insertWithError(code: string) {
       const query = vi.fn(makePoolQuery(async () => { throw dbError(code); }));
       const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
-      return repo.insert(validRecord());
+      return repo.insert(validRecord(), "msg-1");
     }
 
     it("maps 42xxx pg code to PermanentError", async () => {
@@ -151,7 +158,7 @@ describe("PostgresTelemetryRepository", () => {
     it("maps a non-DatabaseError to TransientError with original message", async () => {
       const query = vi.fn(makePoolQuery(async () => { throw new Error("network timeout"); }));
       const repo = new PostgresTelemetryRepository({ query } as unknown as Pool);
-      const result = await repo.insert(validRecord());
+      const result = await repo.insert(validRecord(), "msg-1");
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("expected err");
       expect(result.error.kind).toBe("TransientError");

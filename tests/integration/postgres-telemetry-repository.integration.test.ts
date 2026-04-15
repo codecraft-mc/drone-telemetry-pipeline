@@ -64,15 +64,15 @@ async function rowCount(): Promise<number> {
 describe("PostgresTelemetryRepository — insert", () => {
   it("returns 'inserted' and persists a BATTERY_LOW record", async () => {
     const record = validated(batteryLowRecord());
-    const result = await repo.insert(record);
+    const result = await repo.insert(record, "msg-001");
 
     expect(result).toEqual({ ok: true, value: "inserted" });
     expect(await rowCount()).toBe(1);
   });
 
-  it("persists correct column values", async () => {
+  it("persists correct column values including message_id", async () => {
     const record = validated(batteryLowRecord());
-    await repo.insert(record);
+    await repo.insert(record, "msg-col-test");
 
     const { rows } = await pool.query("SELECT * FROM telemetry_events LIMIT 1");
     const row = rows[0];
@@ -81,14 +81,15 @@ describe("PostgresTelemetryRepository — insert", () => {
     expect(row.event_type).toBe("BATTERY_LOW");
     expect(row.status_code).toBe(record.statusCode);
     expect(new Date(row.event_time).getTime()).toBe(record.timestamp.getTime());
+    expect(row.message_id).toBe("msg-col-test");
     expect(typeof row.payload).toBe("object"); // pg parses JSONB to object
   });
 
   it("returns 'duplicate' and does not insert a second row on conflict", async () => {
     const record = validated(batteryLowRecord());
 
-    const first = await repo.insert(record);
-    const second = await repo.insert(record);
+    const first = await repo.insert(record, "msg-dup-1");
+    const second = await repo.insert(record, "msg-dup-2");
 
     expect(first).toEqual({ ok: true, value: "inserted" });
     expect(second).toEqual({ ok: true, value: "duplicate" });
@@ -100,8 +101,8 @@ describe("PostgresTelemetryRepository — insert", () => {
     const r1 = validated({ ...base, timestamp: new Date(Date.now() - 10_000).toISOString() });
     const r2 = validated({ ...base, timestamp: new Date(Date.now() - 5_000).toISOString() });
 
-    await repo.insert(r1);
-    await repo.insert(r2);
+    await repo.insert(r1, "msg-ts-1");
+    await repo.insert(r2, "msg-ts-2");
 
     expect(await rowCount()).toBe(2);
   });
@@ -118,20 +119,20 @@ describe("PostgresTelemetryRepository — insert", () => {
     // Give each a distinct timestamp to avoid UNIQUE conflicts
     for (let i = 0; i < records.length; i++) {
       const r = { ...records[i]!, timestamp: new Date(Date.now() - i * 10_000) } as TelemetryRecord;
-      const result = await repo.insert(r);
+      const result = await repo.insert(r, `msg-type-${i}`);
       expect(result).toEqual({ ok: true, value: "inserted" });
     }
 
     expect(await rowCount()).toBe(5);
   });
 
-  it("stores payload as JSONB and round-trips telemetry fields", async () => {
+  it("stores payload as JSONB with snake_cased telemetryData keys", async () => {
     const record = validated(batteryLowRecord({ telemetryData: { batteryLevel: 73 } }));
-    await repo.insert(record);
+    await repo.insert(record, "msg-payload");
 
     const { rows } = await pool.query("SELECT payload FROM telemetry_events LIMIT 1");
-    // pg parses JSONB columns into JS objects automatically
-    expect(rows[0].payload).toMatchObject({ telemetryData: { batteryLevel: 73 } });
+    // toRow() snake_cases telemetryData: batteryLevel → battery_level
+    expect(rows[0].payload).toEqual({ battery_level: 73 });
   });
 
   it("rejects a status_code violating the CHECK constraint (0–999) as PermanentError", async () => {
@@ -141,7 +142,7 @@ describe("PostgresTelemetryRepository — insert", () => {
       statusCode: 1000,
     } as unknown as TelemetryRecord;
 
-    const result = await repo.insert(record);
+    const result = await repo.insert(record, "msg-check");
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected err");

@@ -104,11 +104,18 @@ function entryToRawMessage(id: string, fieldValues: readonly string[]): RawMessa
 
 type StreamEntryRow = readonly [id: string, fields: readonly string[]];
 
-function parseStreamEntryRows(raw: unknown): StreamEntryRow[] {
+type ParsedStreamEntryRows = {
+  rows: StreamEntryRow[];
+  /** IDs of entries that had non-string field values coerced to string. */
+  coercedIds: string[];
+};
+
+function parseStreamEntryRows(raw: unknown): ParsedStreamEntryRows {
   if (!Array.isArray(raw)) {
-    return [];
+    return { rows: [], coercedIds: [] };
   }
   const rows: StreamEntryRow[] = [];
+  const coercedIds: string[] = [];
   for (const item of raw) {
     if (!Array.isArray(item) || item.length < 2) {
       continue;
@@ -118,42 +125,48 @@ function parseStreamEntryRows(raw: unknown): StreamEntryRow[] {
     if (typeof id !== "string" || !Array.isArray(fields)) {
       continue;
     }
+    let coerced = false;
     const stringFields: string[] = [];
     for (const f of fields) {
       if (typeof f !== "string") {
-        continue;
+        // Coerce to string so the entry flows downstream to the DLQ rather than
+        // being silently dropped and left stuck in the PEL indefinitely.
+        stringFields.push(String(f));
+        coerced = true;
+      } else {
+        stringFields.push(f);
       }
-      stringFields.push(f);
     }
-    if (stringFields.length === fields.length) {
-      rows.push([id, stringFields]);
+    rows.push([id, stringFields]);
+    if (coerced) {
+      coercedIds.push(id);
     }
   }
-  return rows;
+  return { rows, coercedIds };
 }
 
-function parseXautoclaimReply(raw: unknown): [string, StreamEntryRow[]] {
+function parseXautoclaimReply(raw: unknown): [string, ParsedStreamEntryRows] {
   if (!Array.isArray(raw) || raw.length < 2) {
-    return ["0-0", []];
+    return ["0-0", { rows: [], coercedIds: [] }];
   }
   const next = raw[0];
   const entriesRaw = raw[1];
   if (typeof next !== "string") {
-    return ["0-0", []];
+    return ["0-0", { rows: [], coercedIds: [] }];
   }
   return [next, parseStreamEntryRows(entriesRaw)];
 }
 
-function parseXreadgroupReply(raw: unknown): StreamEntryRow[] {
+function parseXreadgroupReply(raw: unknown): ParsedStreamEntryRows {
   if (raw == null) {
-    return [];
+    return { rows: [], coercedIds: [] };
   }
   if (!Array.isArray(raw) || raw.length === 0) {
-    return [];
+    return { rows: [], coercedIds: [] };
   }
   const streamBlock = raw[0];
   if (!Array.isArray(streamBlock) || streamBlock.length < 2) {
-    return [];
+    return { rows: [], coercedIds: [] };
   }
   const entriesRaw = streamBlock[1];
   return parseStreamEntryRows(entriesRaw);
@@ -231,6 +244,8 @@ export class RedisMessageSource implements MessageSource {
       }
       this.reclaimCycleActive = true;
       let cycleClaimed = 0;
+      // Track where reclaimed messages start in `out` so we can enrich them with PEL counts.
+      const reclaimedStartIdx = out.length;
       while (out.length < this.readCount) {
         throwIfAborted(signal);
         const remaining = this.readCount - out.length;
@@ -247,8 +262,11 @@ export class RedisMessageSource implements MessageSource {
           ),
           signal,
         );
-        const [nextCursor, rows] = parseXautoclaimReply(reply);
+        const [nextCursor, { rows, coercedIds }] = parseXautoclaimReply(reply);
         this.claimCursor = nextCursor;
+        if (coercedIds.length > 0) {
+          this.log?.warn("reclaimed stream entries had non-string field values — coerced to string; entries will flow to DLQ", { coercedIds });
+        }
         for (const [id, fields] of rows) {
           out.push(entryToRawMessage(id, fields));
           cycleClaimed++;
@@ -269,6 +287,37 @@ export class RedisMessageSource implements MessageSource {
         }
         if (out.length >= this.readCount) {
           break;
+        }
+      }
+
+      // Enrich reclaimed messages with authoritative delivery counts from the PEL so the Worker
+      // can enforce maxDeliveryCount correctly across process restarts.
+      const reclaimedCount = out.length - reclaimedStartIdx;
+      if (reclaimedCount > 0) {
+        const reclaimedIds = out.slice(reclaimedStartIdx).map((m) => m.id);
+        const minId = reclaimedIds[0]!;
+        const maxId = reclaimedIds[reclaimedIds.length - 1]!;
+        try {
+          // xpending range returns [[id, consumer, idleMs, deliveryCount], ...]
+          const pending = (await raceAbort(
+            this.redis.xpending(this.streamKey, this.groupName, minId, maxId, reclaimedCount) as Promise<unknown>,
+            signal,
+          )) as [string, string, number, number][];
+          const countMap = new Map<string, number>();
+          for (const [id, , , deliveryCount] of pending) {
+            countMap.set(id, deliveryCount);
+          }
+          for (let i = reclaimedStartIdx; i < out.length; i++) {
+            const msg = out[i]!;
+            const dc = countMap.get(msg.id);
+            if (dc !== undefined) {
+              out[i] = { ...msg, deliveryCount: dc };
+            }
+          }
+        } catch (err) {
+          this.log?.warn("xpending failed — delivery counts unavailable; worker will use in-process counter", {
+            err: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
@@ -292,7 +341,11 @@ export class RedisMessageSource implements MessageSource {
         ),
         signal,
       );
-      for (const [id, fields] of parseXreadgroupReply(reply)) {
+      const { rows: newRows, coercedIds: newCoercedIds } = parseXreadgroupReply(reply);
+      if (newCoercedIds.length > 0) {
+        this.log?.warn("new stream entries had non-string field values — coerced to string; entries will flow to DLQ", { coercedIds: newCoercedIds });
+      }
+      for (const [id, fields] of newRows) {
         out.push(entryToRawMessage(id, fields));
         if (out.length >= this.readCount) {
           break;
@@ -311,18 +364,3 @@ export class RedisMessageSource implements MessageSource {
   }
 }
 
-/**
- * Yields messages from a {@link MessageSource} until {@link AbortSignal} aborts (then
- * {@link MessageSource.read} rejects) or the caller stops the iterator.
- */
-export async function* iterateMessages(
-  source: MessageSource,
-  signal?: AbortSignal,
-): AsyncGenerator<RawMessage, void, undefined> {
-  for (;;) {
-    const batch = await source.read(signal);
-    for (const m of batch) {
-      yield m;
-    }
-  }
-}

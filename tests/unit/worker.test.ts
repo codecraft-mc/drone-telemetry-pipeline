@@ -53,7 +53,7 @@ class FakeTelemetryRepository implements TelemetryRepository {
     this.response = response;
   }
 
-  async insert(record: TelemetryRecord): Promise<Result<TelemetryInsertOutcome, TransientError | PermanentError>> {
+  async insert(record: TelemetryRecord, _messageId: string): Promise<Result<TelemetryInsertOutcome, TransientError | PermanentError>> {
     this.insertedRecords.push(record);
     return this.response;
   }
@@ -318,7 +318,7 @@ describe("Worker — multi-message batch", () => {
       ok("inserted"),
     ];
     const telemetryRepo: TelemetryRepository = {
-      async insert() { return responses[callIndex++]!; },
+      async insert(_record, _messageId) { return responses[callIndex++]!; },
     };
     const dlq = new FakeDeadLetterRepository();
     const messages = [makeMessage("m1"), makeMessage("m2"), makeMessage("m3")];

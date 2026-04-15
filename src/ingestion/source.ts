@@ -12,6 +12,12 @@ export type RawMessage = {
   readonly id: string;
   readonly body: unknown;
   readonly receivedAt: Date;
+  /**
+   * How many times this message has been delivered across all consumers and process restarts,
+   * as tracked by the Redis PEL. Populated for reclaimed messages (XAUTOCLAIM path); `undefined`
+   * for freshly delivered messages where delivery count is implicitly 1.
+   */
+  readonly deliveryCount?: number;
 };
 
 export interface IngestionSource {

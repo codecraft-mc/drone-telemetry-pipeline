@@ -11,8 +11,8 @@
 CREATE TABLE dead_letters (
   id BIGSERIAL PRIMARY KEY,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  failure_phase TEXT,
-  error_message TEXT,
+  failure_phase TEXT NOT NULL,
+  error_message TEXT NOT NULL,
   errors JSONB,
   payload JSONB NOT NULL,
   message_id TEXT NOT NULL,

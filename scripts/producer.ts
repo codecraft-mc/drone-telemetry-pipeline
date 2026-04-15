@@ -35,16 +35,18 @@ const { values: args } = parseArgs({
     drones:      { type: "string", default: "5" },
     stream:      { type: "string", default: "drone:telemetry" },
     redis:       { type: "string", default: process.env.REDIS_URL ?? "redis://localhost:6379" },
+    maxlen:      { type: "string", default: "100000" },
   },
   strict: true,
 });
 
-const RATE        = Math.max(1, Number(args.rate));
-const DURATION_S  = Math.max(0, Number(args.duration));
-const CORRUPTION  = Math.min(1, Math.max(0, Number(args.corruption)));
-const DRONE_COUNT = Math.max(1, Number(args.drones));
-const STREAM_KEY  = args.stream as string;
-const REDIS_URL   = args.redis as string;
+const RATE         = Math.max(1, Number(args.rate));
+const DURATION_S   = Math.max(0, Number(args.duration));
+const CORRUPTION   = Math.min(1, Math.max(0, Number(args.corruption)));
+const DRONE_COUNT  = Math.max(1, Number(args.drones));
+const STREAM_KEY   = args.stream as string;
+const REDIS_URL    = args.redis as string;
+const STREAM_MAXLEN = Math.max(1_000, Number(args.maxlen));
 
 const INTERVAL_MS = 1_000 / RATE;
 
@@ -331,6 +333,7 @@ async function main(): Promise<void> {
   console.log(`  Duration:   ${DURATION_S === 0 ? "∞ (until Ctrl-C)" : `${DURATION_S}s`}`);
   console.log(`  Corruption: ${(CORRUPTION * 100).toFixed(0)}%`);
   console.log(`  Drones:     ${DRONE_COUNT} (${DRONE_IDS.slice(0, 3).join(", ")}${DRONE_COUNT > 3 ? ", …" : ""})`);
+  console.log(`  Max len:    ~${STREAM_MAXLEN.toLocaleString()} entries`);
   console.log("");
 
   const redis = new Redis(REDIS_URL, {
@@ -371,7 +374,11 @@ async function main(): Promise<void> {
         : JSON.stringify(payload);
 
     try {
-      await redis.xadd(STREAM_KEY, "*", "payload", serialised);
+      // MAXLEN ~ N keeps the stream bounded. ioredis passes args verbatim to Redis so the full
+      // XADD key MAXLEN ~ N * field value syntax works even though the TypeScript overload
+      // doesn't expose it.
+      // @ts-expect-error — ioredis types don't expose the MAXLEN overload; Redis accepts this form
+      await redis.xadd(STREAM_KEY, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "payload", serialised);
       stats.published++;
       if (isCorrupt) {
         stats.corrupt++;
