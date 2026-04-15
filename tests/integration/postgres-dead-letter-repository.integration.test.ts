@@ -115,13 +115,13 @@ describe("PostgresDeadLetterRepository — enqueue", () => {
   it("sets DB-defaulted columns (received_at, retry_count) automatically", async () => {
     const before = new Date();
     await repo.enqueue(entry());
-    const after = new Date();
-
     const { rows } = await pool.query("SELECT received_at, retry_count FROM dead_letters LIMIT 1");
+    const after = new Date();
     const row = rows[0];
 
-    expect(new Date(row.received_at).getTime()).toBeGreaterThanOrEqual(before.getTime());
-    expect(new Date(row.received_at).getTime()).toBeLessThanOrEqual(after.getTime());
+    // Allow ±1 s tolerance for clock skew between Node.js and the Postgres container.
+    expect(new Date(row.received_at).getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+    expect(new Date(row.received_at).getTime()).toBeLessThanOrEqual(after.getTime() + 1000);
     expect(row.retry_count).toBe(0);
   });
 });
